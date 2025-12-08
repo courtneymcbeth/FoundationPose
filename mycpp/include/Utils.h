@@ -36,7 +36,9 @@
 #include <omp.h>
 
 
-using vectorMatrix4f = std::vector<Eigen::Matrix4f,Eigen::aligned_allocator<Eigen::Matrix4f>>;
+// Changed from Eigen::aligned_allocator to std::allocator for pybind11 compatibility
+// With C++11+, Eigen handles alignment automatically for fixed-size types like Matrix4f
+using vectorMatrix4f = std::vector<Eigen::Matrix4f>;
 
 
 namespace Utils

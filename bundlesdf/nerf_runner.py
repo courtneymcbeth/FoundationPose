@@ -1135,7 +1135,7 @@ class NerfRunner:
     tex_image = torch.zeros((tex_res,tex_res,3)).cuda().float()
     weight_tex_image = torch.zeros(tex_image.shape[:-1]).cuda().float()
     mesh.merge_vertices()
-    mesh.remove_duplicate_faces()
+    mesh.update_faces(mesh.unique_faces())  # Replacement for deprecated remove_duplicate_faces()
     mesh = mesh.unwrap()
     H,W = tex_image.shape[:2]
     uvs_tex = (mesh.visual.uv*np.array([W-1,H-1]).reshape(1,2))    #(n_V,2)
@@ -1182,51 +1182,138 @@ class NerfRunner:
     all_tri_visited= {key: 0 for key in range(mesh.triangles.shape[0])}
 
     logging.info(f"Texture: Texture map computation")
-    for i in range(len(rgbs_raw)):
-      print(f'project train_images {i}/{len(rgbs_raw)}')
+    # Wrap loop in try-except to catch and provide better error info
+    try:
+      for i in range(len(rgbs_raw)):
+        print(f'[DEBUG] Starting iteration {i}/{len(rgbs_raw)}')
 
-      cvcam_in_ob = tf[i]@np.linalg.inv(glcam_in_cvcam)
-      _, render_depth = renderer.render(mesh=mesh, ob_in_cvcam=np.linalg.inv(cvcam_in_ob))
-      xyz_map = depth2xyzmap(render_depth, self.K)
-      mask = self.masks[i].reshape(self.H,self.W).astype(bool)
-      valid = (render_depth.reshape(self.H,self.W)>=0.1*self.cfg['sc_factor']) & (mask)
-      pts = xyz_map[valid].reshape(-1,3)
-      pts = transform_pts(pts, cvcam_in_ob)
-      ray_colors = rgbs_raw[i][valid].reshape(-1,3)
-      locations, distance, index_tri = trimesh.proximity.closest_point(mesh, pts)
-      normals = mesh.face_normals[index_tri]
-      rays_o = np.zeros((len(normals),3))
-      rays_o = transform_pts(rays_o,cvcam_in_ob)
-      rays_d = locations-rays_o
-      rays_d /= np.linalg.norm(rays_d,axis=-1).reshape(-1,1)
-      dots = (normals*(-rays_d)).sum(axis=-1)
-      ray_weights = np.ones((len(rays_o)))
-      bool_weights=torch.zeros(len(locations), dtype=torch.bool, device='cuda')
-      count = 0
-      for jj, trtind__ in enumerate(index_tri):
-        if(i in all_triangles_dict[trtind__] ):
-            bool_weights[jj]=1
-            all_tri_visited[trtind__]=1
-            count +=1
+        print(f'[DEBUG] {i}: Computing transforms')
+        cvcam_in_ob = tf[i]@np.linalg.inv(glcam_in_cvcam)
 
-      uvs = torch.zeros((len(locations),2)).cuda().float()
-      common.rayColorToTextureImageCUDA(torch.from_numpy(mesh.faces).cuda().long(), torch.from_numpy(mesh.vertices).cuda().float(), torch.from_numpy(locations).cuda().float(), torch.from_numpy(index_tri).cuda().long(), torch.from_numpy(uvs_tex).cuda().float(), uvs)
-      uvs = torch.round(uvs).long()
-      uvs_flat = uvs[:,1]*(W-1) + uvs[:,0]
-      uvs_flat_unique, inverse_ids, cnts = torch.unique(uvs_flat, return_counts=True, return_inverse=True)
-      perm = torch.arange(inverse_ids.size(0)).cuda()
-      inverse_ids, perm = inverse_ids.flip([0]), perm.flip([0])
-      unique_ids = inverse_ids.new_empty(uvs_flat_unique.size(0)).scatter_(0, inverse_ids, perm)
-      uvs_unique = torch.stack((uvs_flat_unique%(W-1), uvs_flat_unique//(W-1)), dim=-1).reshape(-1,2)
-      cur_weights= bool_weights[unique_ids].cuda().float()
-      tex_image[uvs_unique[:,1],uvs_unique[:,0]] += torch.from_numpy(ray_colors).cuda().float()[unique_ids]*cur_weights.reshape(-1,1)
-      weight_tex_image[uvs_unique[:,1], uvs_unique[:,0]] += cur_weights
+        print(f'[DEBUG] {i}: Rendering depth')
+        _, render_depth = renderer.render(mesh=mesh, ob_in_cvcam=np.linalg.inv(cvcam_in_ob))
 
-    tex_image = tex_image/weight_tex_image[...,None]
+        print(f'[DEBUG] {i}: Computing xyz_map')
+        xyz_map = depth2xyzmap(render_depth, self.K)
+
+        print(f'[DEBUG] {i}: Processing mask and valid pixels')
+        mask = self.masks[i].reshape(self.H,self.W).astype(bool)
+        valid = (render_depth.reshape(self.H,self.W)>=0.1*self.cfg['sc_factor']) & (mask)
+        pts = xyz_map[valid].reshape(-1,3)
+        pts = transform_pts(pts, cvcam_in_ob)
+        ray_colors = rgbs_raw[i][valid].reshape(-1,3)
+
+        print(f'[DEBUG] {i}: Finding closest points on mesh')
+        locations, distance, index_tri = trimesh.proximity.closest_point(mesh, pts)
+
+        print(f'[DEBUG] {i}: Computing normals and rays')
+        normals = mesh.face_normals[index_tri]
+        rays_o = np.zeros((len(normals),3))
+        rays_o = transform_pts(rays_o,cvcam_in_ob)
+        rays_d = locations-rays_o
+        rays_d /= np.linalg.norm(rays_d,axis=-1).reshape(-1,1)
+        dots = (normals*(-rays_d)).sum(axis=-1)
+        ray_weights = np.ones((len(rays_o)))
+
+        print(f'[DEBUG] {i}: Setting up bool_weights')
+        bool_weights=torch.zeros(len(locations), dtype=torch.bool, device='cuda')
+        count = 0
+        for jj, trtind__ in enumerate(index_tri):
+          if(i in all_triangles_dict[trtind__] ):
+              bool_weights[jj]=1
+              all_tri_visited[trtind__]=1
+              count +=1
+
+        print(f'[DEBUG] {i}: Allocating CUDA tensors')
+        # Allocate output tensor
+        uvs = torch.zeros((len(locations),2), dtype=torch.float32, device='cuda')
+
+        # Create input tensors with explicit numpy copies to avoid memory aliasing issues
+        mesh_faces_cuda = torch.from_numpy(mesh.faces.copy()).cuda().long()
+        mesh_vertices_cuda = torch.from_numpy(mesh.vertices.copy()).cuda().float()
+        locations_cuda = torch.from_numpy(locations.copy()).cuda().float()
+        index_tri_cuda = torch.from_numpy(index_tri.copy()).cuda().long()
+        uvs_tex_cuda = torch.from_numpy(uvs_tex.copy()).cuda().float()
+
+        print(f'[DEBUG] {i}: Calling CUDA kernel rayColorToTextureImageCUDA')
+        # Call CUDA function
+        common.rayColorToTextureImageCUDA(mesh_faces_cuda, mesh_vertices_cuda, locations_cuda, index_tri_cuda, uvs_tex_cuda, uvs)
+
+        print(f'[DEBUG] {i}: CUDA kernel finished, synchronizing')
+        # Wait for CUDA kernel to complete
+        torch.cuda.synchronize()
+
+        print(f'[DEBUG] {i}: Processing UVs')
+        uvs = torch.round(uvs).long()
+        uvs_flat = uvs[:,1]*(W-1) + uvs[:,0]
+        uvs_flat_unique, inverse_ids, _ = torch.unique(uvs_flat, return_counts=True, return_inverse=True)
+        perm = torch.arange(inverse_ids.size(0), device='cuda')
+        inverse_ids, perm = inverse_ids.flip([0]), perm.flip([0])
+        unique_ids = inverse_ids.new_empty(uvs_flat_unique.size(0)).scatter_(0, inverse_ids, perm)
+        uvs_unique = torch.stack((uvs_flat_unique%(W-1), uvs_flat_unique//(W-1)), dim=-1).reshape(-1,2)
+
+        print(f'[DEBUG] {i}: Computing weights and updating texture')
+        cur_weights= bool_weights[unique_ids].float()
+        ray_colors_cuda = torch.from_numpy(ray_colors.copy()).cuda().float()
+        tex_image[uvs_unique[:,1],uvs_unique[:,0]] += ray_colors_cuda[unique_ids]*cur_weights.reshape(-1,1)
+        weight_tex_image[uvs_unique[:,1], uvs_unique[:,0]] += cur_weights
+
+        print(f'[DEBUG] {i}: Cleaning up CUDA tensors')
+        # Explicitly delete CUDA tensors to prevent double-free issues
+        del mesh_faces_cuda, mesh_vertices_cuda, locations_cuda, index_tri_cuda, uvs_tex_cuda
+        del uvs, uvs_flat, uvs_flat_unique, inverse_ids, perm, unique_ids, uvs_unique
+        del bool_weights, cur_weights, ray_colors_cuda
+
+        print(f'[DEBUG] {i}: Iteration complete')
+        # Synchronize CUDA every 4 iterations
+        if i % 4 == 3:  # Every 4 iterations
+          print(f'[DEBUG] {i}: Synchronizing CUDA')
+          torch.cuda.synchronize()  # Ensure all CUDA operations are done
+          print(f'[DEBUG] {i}: Synchronization completed')
+
+        print(f'[DEBUG] {i}: Done with iteration {i}')
+        print(f'[DEBUG] {i}: About to complete iteration and loop back')
+        print()
+
+      print('[DEBUG] Loop completed, exited for loop')
+    except Exception as e:
+      logging.error(f"Error during texture projection: {e}")
+      import traceback
+      traceback.print_exc()
+      raise
+
+    print('[DEBUG] After try-except block, processing final texture')
+    # Handle division by zero to avoid NaN values
+    print('[DEBUG] Computing final texture division')
+    tex_image = tex_image/torch.clamp(weight_tex_image[...,None], min=1e-8)
+    print('[DEBUG] Converting texture to CPU numpy')
     tex_image = tex_image.data.cpu().numpy()
+    print('[DEBUG] Handling NaN/inf values')
+    # Replace NaN/inf with 0 before clipping
+    tex_image = np.nan_to_num(tex_image, nan=0.0, posinf=255.0, neginf=0.0)
+    print('[DEBUG] Clipping and converting to uint8')
     tex_image = np.clip(tex_image,0,255).astype(np.uint8)
+    print('[DEBUG] Flipping texture')
     tex_image = tex_image[::-1].copy()
+    print('[DEBUG] Calling texture_map_interpolation')
     new_texture = texture_map_interpolation(tex_image)
 
+    print('[DEBUG] Setting mesh visual texture')
     mesh.visual = trimesh.visual.texture.TextureVisuals(uv=mesh.visual.uv,image=Image.fromarray(new_texture))
+
+    print('[DEBUG] About to delete renderer and torch tensors')
+    # Clean up renderer - let Python's GC handle it instead of explicit delete()
+    # Explicit delete() can cause double-free errors
+    del renderer
+    # Delete the large torch CUDA tensor that's still in scope
+    # (weight_tex_image is still a torch tensor on CUDA)
+    del weight_tex_image
+    print('[DEBUG] Renderer and tensors deleted')
+
+    # Synchronize CUDA but don't call empty_cache() - it causes double-free errors
+    # when Python's garbage collector tries to clean up on function return
+    print('[DEBUG] About to synchronize CUDA')
+    torch.cuda.synchronize()  # Wait for all CUDA operations to complete
+    print('[DEBUG] Cleanup complete, returning mesh')
+
     return mesh

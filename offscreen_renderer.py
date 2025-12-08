@@ -46,6 +46,11 @@ class ModelRendererOffscreen:
     self.W = W
     self.r = pyrender.OffscreenRenderer(self.W, self.H)
 
+  def __del__(self):
+    """Clean up OpenGL resources - let pyrender's own cleanup handle it"""
+    # Note: Explicit r.delete() can cause double-free errors
+    # Let Python's garbage collector and pyrender's __del__ handle cleanup
+    pass
 
   def set_cam_pose(self, cam_pose):
     self.cam_node.matrix = cam_pose
