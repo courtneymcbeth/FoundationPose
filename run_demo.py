@@ -30,7 +30,7 @@ if __name__=='__main__':
 
   debug = args.debug
   debug_dir = args.debug_dir
-  os.system(f'rm -rf {debug_dir}/* && mkdir -p {debug_dir}/track_vis {debug_dir}/ob_in_cam')
+  os.system(f'rm -rf {debug_dir}/* && mkdir -p {debug_dir}/track_vis {debug_dir}/ob_in_cam {debug_dir}/ob_in_cam_npy')
 
   to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
   bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2,3)
@@ -64,6 +64,9 @@ if __name__=='__main__':
 
     os.makedirs(f'{debug_dir}/ob_in_cam', exist_ok=True)
     np.savetxt(f'{debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose.reshape(4,4))
+
+    os.makedirs(f'{debug_dir}/ob_in_cam_npy', exist_ok=True)
+    np.save(f'{debug_dir}/ob_in_cam_npy/{reader.id_strs[i]}.npy', pose.reshape(4,4))
 
     if debug>=1:
       center_pose = pose@np.linalg.inv(to_origin)
