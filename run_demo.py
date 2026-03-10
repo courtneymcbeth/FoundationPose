@@ -80,12 +80,10 @@ if __name__=='__main__':
       xmax, ymax, zmax = bbox[1]
       corners_3d = np.array([[x, y, z] for x in [xmin, xmax] for y in [ymin, ymax] for z in [zmin, zmax]])
       corners_cam = (center_pose @ np.hstack([corners_3d, np.ones((8, 1))]).T).T[:, :3]
-      cam_min = corners_cam.min(axis=0)
-      cam_max = corners_cam.max(axis=0)
       os.makedirs(f'{debug_dir}/bbox_cam', exist_ok=True)
       np.savetxt(f'{debug_dir}/bbox_cam/{reader.id_strs[i]}.txt',
-                 np.stack([cam_min, cam_max]),
-                 header='rows: min max, cols: x y z (camera frame)', fmt='%.6f')
+                 corners_cam,
+                 header='8 corners of oriented 3D bounding box in camera frame, cols: x y z', fmt='%.6f')
 
 
     if debug>=2:
