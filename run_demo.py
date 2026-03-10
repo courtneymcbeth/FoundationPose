@@ -72,6 +72,16 @@ if __name__=='__main__':
       cv2.imshow('1', vis[...,::-1])
       cv2.waitKey(1)
 
+      # Transform 8 3D bbox corners into camera frame and save axis-aligned bounds
+      xmin, ymin, zmin = bbox[0]
+      xmax, ymax, zmax = bbox[1]
+      corners_3d = np.array([[x, y, z] for x in [xmin, xmax] for y in [ymin, ymax] for z in [zmin, zmax]])
+      corners_cam = (center_pose @ np.hstack([corners_3d, np.ones((8, 1))]).T).T[:, :3]
+      os.makedirs(f'{debug_dir}/bbox_cam', exist_ok=True)
+      np.savetxt(f'{debug_dir}/bbox_cam/{reader.id_strs[i]}.txt',
+                 corners_cam,
+                 header='8 corners of oriented 3D bounding box in camera frame, cols: x y z', fmt='%.6f')
+
 
     if debug>=2:
       os.makedirs(f'{debug_dir}/track_vis', exist_ok=True)
