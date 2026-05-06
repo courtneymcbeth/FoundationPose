@@ -30,7 +30,9 @@ if __name__=='__main__':
 
   debug = args.debug
   debug_dir = args.debug_dir
-  os.system(f'rm -rf {debug_dir}/* && mkdir -p {debug_dir}/track_vis {debug_dir}/ob_in_cam {debug_dir}/ob_in_cam_npy')
+  output_dir = args.test_scene_dir
+  os.system(f'rm -rf {debug_dir}/* && mkdir -p {debug_dir}')
+  os.system(f'rm -rf {output_dir}/track_vis {output_dir}/ob_in_cam {output_dir}/ob_in_cam_npy {output_dir}/bbox_cam && mkdir -p {output_dir}/track_vis {output_dir}/ob_in_cam {output_dir}/ob_in_cam_npy {output_dir}/bbox_cam')
 
   to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
   bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2,3)
@@ -62,11 +64,11 @@ if __name__=='__main__':
     else:
       pose = est.track_one(rgb=color, depth=depth, K=reader.K, iteration=args.track_refine_iter)
 
-    os.makedirs(f'{debug_dir}/ob_in_cam', exist_ok=True)
-    np.savetxt(f'{debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose.reshape(4,4))
+    os.makedirs(f'{output_dir}/ob_in_cam', exist_ok=True)
+    np.savetxt(f'{output_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose.reshape(4,4))
 
-    os.makedirs(f'{debug_dir}/ob_in_cam_npy', exist_ok=True)
-    np.save(f'{debug_dir}/ob_in_cam_npy/{reader.id_strs[i]}.npy', pose.reshape(4,4))
+    os.makedirs(f'{output_dir}/ob_in_cam_npy', exist_ok=True)
+    np.save(f'{output_dir}/ob_in_cam_npy/{reader.id_strs[i]}.npy', pose.reshape(4,4))
 
     if debug>=1:
       center_pose = pose@np.linalg.inv(to_origin)
@@ -80,13 +82,13 @@ if __name__=='__main__':
       xmax, ymax, zmax = bbox[1]
       corners_3d = np.array([[x, y, z] for x in [xmin, xmax] for y in [ymin, ymax] for z in [zmin, zmax]])
       corners_cam = (center_pose @ np.hstack([corners_3d, np.ones((8, 1))]).T).T[:, :3]
-      os.makedirs(f'{debug_dir}/bbox_cam', exist_ok=True)
-      np.savetxt(f'{debug_dir}/bbox_cam/{reader.id_strs[i]}.txt',
+      os.makedirs(f'{output_dir}/bbox_cam', exist_ok=True)
+      np.savetxt(f'{output_dir}/bbox_cam/{reader.id_strs[i]}.txt',
                  corners_cam,
                  header='8 corners of oriented 3D bounding box in camera frame, cols: x y z', fmt='%.6f')
 
 
     if debug>=2:
-      os.makedirs(f'{debug_dir}/track_vis', exist_ok=True)
-      imageio.imwrite(f'{debug_dir}/track_vis/{reader.id_strs[i]}.png', vis)
+      os.makedirs(f'{output_dir}/track_vis', exist_ok=True)
+      imageio.imwrite(f'{output_dir}/track_vis/{reader.id_strs[i]}.png', vis)
 

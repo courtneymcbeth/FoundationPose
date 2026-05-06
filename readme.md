@@ -67,29 +67,65 @@ year          = {2023},
 1) [Optional] Download our preprocessed reference views [here](https://drive.google.com/drive/folders/1PXXCOJqHXwQTbwPwPbGDN9_vLVe0XpFS?usp=sharing) in order to run model-free few-shot version.
 
 # Env setup option 1: docker (recommended)
-  ```
-  cd docker/
-  docker pull wenbowen123/foundationpose && docker tag wenbowen123/foundationpose foundationpose  # Or to build from scratch: docker build --network host -t foundationpose .
-  bash docker/run_container.sh
-  ```
 
+**Requirements:** NVIDIA driver >= 525, CUDA 12.x, Docker with NVIDIA Container Toolkit.
 
-If it's the first time you launch the container, you need to build extensions. Run this command *inside* the Docker container.
+### 1. Install Docker and NVIDIA Container Toolkit
+
+```bash
+# Docker
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER && newgrp docker
+
+# NVIDIA Container Toolkit
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
 ```
+
+### 2. Build the image
+
+The provided `docker/dockerfile` targets **CUDA 12.8 + Ubuntu 22.04** with Python 3.11 and PyTorch 2.5.1.
+
+```bash
+cd docker/
+docker build -t foundationpose:latest -f dockerfile .
+```
+
+This takes ~30–60 minutes on first build (pytorch3d and nvdiffrast are compiled from source).
+
+### 3. Launch the container
+
+```bash
+bash docker/run_container.sh
+```
+
+The script mounts your home directory and sets up X11 forwarding for visualisation. The container is named `foundationpose` and will replace any existing container with that name.
+
+### 4. Build C++/CUDA extensions (first launch only)
+
+Run this **inside the container**:
+
+```bash
 bash build_all.sh
 ```
 
-Later you can execute into the container without re-build.
-```
+### 5. Re-enter the container later
+
+```bash
 docker exec -it foundationpose bash
 ```
 
-For more recent GPU such as 4090, refer to [this](https://github.com/NVlabs/FoundationPose/issues/27).
-In short, do the following:
+### Verify GPU access
+
+```bash
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 ```
-docker pull shingarey/foundationpose_custom_cuda121:latest
-```
-Then modify the bash script to use this image instead of `foundationpose:latest`.
 
 
 # Env setup option 2: conda (experimental)
@@ -124,11 +160,62 @@ CMAKE_PREFIX_PATH=$CONDA_PREFIX/lib/python3.9/site-packages/pybind11/share/cmake
 ```
 
 
-# Run model-based demo
-The paths have been set in argparse by default. If you need to change the scene, you can pass the args accordingly. By running on the demo data, you should be able to see the robot manipulating the mustard bottle. Pose estimation is conducted on the first frame, then it automatically switches to tracking mode for the rest of the video. The resulting visualizations will be saved to the `debug_dir` specified in the argparse. (Note the first time running could be slower due to online compilation)
+# Preparing your own data
+
+Scene directories must follow this layout:
+
 ```
+my_scene/
+├── cam_K.txt          # 3x3 camera intrinsics, space-separated
+├── mesh/
+│   └── object.obj     # CAD model of the object
+├── rgb/
+│   ├── 0000.png
+│   ├── 0001.png
+│   └── ...
+└── depth/
+    ├── 0000.png       # 16-bit PNG, depth in millimetres
+    ├── 0001.png
+    └── ...
+```
+
+RGB and depth filenames must match exactly. Depth values are divided by 1000 to convert to metres.
+
+### Filling missing depth frames
+
+If your depth stream dropped frames, use `fill_depth.py` to forward-fill gaps with the last known depth image.
+
+**Dry run** (shows what would be copied, no files written):
+```bash
+python fill_depth.py --dry-run demo_data/my_scene
+```
+
+**Fill in place** (supports multiple scene directories at once):
+```bash
+python fill_depth.py demo_data/my_scene1 demo_data/my_scene2
+```
+
+# Run model-based demo
+
+Pose estimation runs on the first frame, then automatically switches to tracking for the rest of the sequence. Visualisations are saved to `debug/`.
+
+**Default scene (mustard bottle):**
+```bash
 python run_demo.py
 ```
+
+**Custom scene:**
+```bash
+python run_demo.py \
+  --mesh_file demo_data/my_scene/mesh/object.obj \
+  --test_scene_dir demo_data/my_scene
+```
+
+Key arguments:
+- `--est_refine_iter` — number of pose estimation refinement iterations (default 5)
+- `--track_refine_iter` — number of tracking refinement iterations per frame (default 2)
+- `--debug` — set to 1 to save per-frame visualisations, 0 to disable
+- `--debug_dir` — output directory for visualisations (default `debug/`)
 
 
 <img src="assets/demo.jpg" width="50%">
@@ -162,12 +249,13 @@ python run_ycb_video.py --ycbv_dir /mnt/9a72c439-d0a7-45e8-8d20-d7a235d02763/DAT
 
 # Troubleshooting
 
+- **Modern GPUs (RTX 40-series, CUDA 12.x):** use the `docker/dockerfile` in this repo — it targets CUDA 12.8 + Ubuntu 22.04 and handles the updated package names and PyTorch wheel URLs. The upstream image (`wenbowen123/foundationpose`) was built for CUDA 11.3 and will not work.
 
-- For more recent GPU such as 4090, refer to [this](https://github.com/NVlabs/FoundationPose/issues/27).
+- **`TORCH_CUDA_ARCH_LIST` error during build:** Docker build has no GPU access, so the arch list must be set explicitly. The Dockerfile sets `ENV TORCH_CUDA_ARCH_LIST="8.9"` for Ada Lovelace (RTX 40-series). Change this value if you are on a different GPU generation (e.g. `8.6` for RTX 30-series, `7.5` for RTX 20-series).
 
-- For setting up on Windows, refer to [this](https://github.com/NVlabs/FoundationPose/issues/148).
+- **For setting up on Windows**, refer to [this](https://github.com/NVlabs/FoundationPose/issues/148).
 
-- If you are getting unreasonable results, check [this](https://github.com/NVlabs/FoundationPose/issues/44#issuecomment-2048141043) and [this](https://github.com/030422Lee/FoundationPose_manual)
+- **Unreasonable pose results:** check [this issue](https://github.com/NVlabs/FoundationPose/issues/44#issuecomment-2048141043) and [this manual](https://github.com/030422Lee/FoundationPose_manual).
 
 # Training data download
 Our training data include scenes using 3D assets from GSO and Objaverse, rendered with high quality photo-realism and large domain randomization. Each data point includes **RGB, depth, object pose, camera pose, instance segmentation, 2D bounding box**. [[Google Drive]](https://drive.google.com/drive/folders/1s4pB6p4ApfWMiMjmTXOFco8dHbNXikp-?usp=sharing).
